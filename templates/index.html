@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <title>NF Solver Web</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Combine valores para atingir um total com tolerância.">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .val-invalid { border-color: #dc3545 !important; }
+    .sticky-head th { position: sticky; top: 0; background: var(--bs-body-bg); z-index: 1; }
+    tr.selecionado td { background-color: #d8f5d0 !important; } /* verde leve */
+  </style>
+</head>
+<body class="bg-light">
+  <div class="container py-4" id="app-root">
+    <h1 class="mb-3">NF Solver Web</h1>
+
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <form id="solver-form" class="card shadow-sm border-0">
+      <div class="card-body pb-2">
+
+        <div class="row g-3 mb-1">
+          <div class="col-12 col-md-6">
+            <div class="form-floating">
+              <input type="text" class="form-control mono" id="alvo" name="alvo" placeholder="0,00" inputmode="decimal" autocomplete="off" value="{{ alvo or '' }}" required>
+              <label for="alvo">Total desejado</label>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div class="form-floating">
+              <input type="text" class="form-control mono" id="tolerancia" name="tolerancia" placeholder="0,00" inputmode="decimal" autocomplete="off" value="{{ tolerancia or '0,00' }}">
+              <label for="tolerancia">Tolerância (±)</label>
+            </div>
+          </div>
+        </div>
+
+        <hr class="my-3">
+
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h6 class="mb-0">Itens</h6>
+          <div class="d-flex align-items-center gap-2">
+            <span class="text-muted small"><span id="count">0</span> itens • soma parcial: <strong id="subtotal" class="mono">0,00</strong></span>
+            <button type="button" id="btn-add" class="btn btn-outline-primary btn-sm">+ Linha</button>
+            <button type="button" id="btn-clear" class="btn btn-outline-secondary btn-sm">Limpar</button>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-2">
+            <thead class="sticky-head">
+              <tr class="text-muted">
+                <th style="width:56%">Nome / Título (opcional)</th>
+                <th style="width:34%" class="text-end">Valor</th>
+                <th style="width:10%" class="text-center">Ações</th>
+              </tr>
+            </thead>
+            <tbody id="rows-body"></tbody>
+          </table>
+        </div>
+
+        <textarea id="lista" name="lista" class="d-none">{{ lista or '' }}</textarea>
+
+        <div id="resultado" class="alert alert-success d-none mt-3"></div>
+      </div>
+
+      <div class="card-footer bg-body d-flex gap-2 justify-content-end">
+        <button type="submit" class="btn btn-primary">Calcular</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal fade" id="noMatchModal" tabindex="-1" aria-labelledby="noMatchLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header border-0">
+          <h5 class="modal-title" id="noMatchLabel">Aviso</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+        <div class="modal-body">não existe combinação para os valores informados</div>
+        <div class="modal-footer border-0">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    const brFmt = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const tbody = document.getElementById('rows-body');
+    const btnAdd = document.getElementById('btn-add');
+    const btnClear = document.getElementById('btn-clear');
+    const form = document.getElementById('solver-form');
+    const alvoInput = document.getElementById('alvo');
+    const tolInput = document.getElementById('tolerancia');
+    const listaHidden = document.getElementById('lista');
+    const countEl = document.getElementById('count');
+    const subtotalEl = document.getElementById('subtotal');
+    const resultadoEl = document.getElementById('resultado');
+
+    function cleanToCents(str) {
+      if (!str) return null;
+      str = String(str).trim();
+      if (!str) return null;
+      let s = str.replace(/\s/g, '');
+      if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
+      else s = s.replace(/,/g, '');
+      const val = Number(s);
+      if (!isFinite(val)) return null;
+      return Math.round(val * 100);
+    }
+    function centsToBr(c) { return brFmt.format((c||0)/100); }
+
+    function formatInput(inp) {
+      const c = cleanToCents(inp.value);
+      if (c==null && inp.value.trim()!=='') inp.classList.add('val-invalid');
+      else { inp.classList.remove('val-invalid'); if(inp.value.trim()!=='') inp.value=centsToBr(c);}
+    }
+
+    function makeRow(name='', val='') {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="text" class="form-control" placeholder="Ex.: NF001" value="${name}"></td>
+        <td><input type="text" class="form-control mono text-end" placeholder="0,00" value="${val}" inputmode="decimal"></td>
+        <td class="text-center"><button type="button" class="btn btn-outline-danger btn-sm">🗑️</button></td>`;
+      const [nameInput, valInput, delBtn] = [
+        tr.querySelectorAll('input')[0],
+        tr.querySelectorAll('input')[1],
+        tr.querySelector('button')
+      ];
+      delBtn.addEventListener('click',()=>{tr.remove();updateSubtotal();});
+      valInput.addEventListener('blur',()=>formatInput(valInput));
+      valInput.addEventListener('input',()=>{valInput.value=valInput.value.replace(/[^\d.,-]/g,'');updateSubtotal();});
+      tbody.appendChild(tr);
+      updateSubtotal();
+      return tr;
+    }
+
+    btnAdd.onclick=()=>makeRow();
+    btnClear.onclick=()=>{tbody.innerHTML='';makeRow();updateSubtotal();};
+
+    function updateSubtotal(){
+      const rows=[...tbody.querySelectorAll('tr')];
+      let sum=0; let count=0;
+      rows.forEach(r=>{
+        const val=cleanToCents(r.children[1].querySelector('input').value);
+        if(val!=null){sum+=val;count++;}
+      });
+      countEl.textContent=count;
+      subtotalEl.textContent=centsToBr(sum);
+    }
+
+    tbody.addEventListener('keydown',ev=>{
+      if(ev.key==='Tab' && !ev.shiftKey){
+        const inputs=[...tbody.querySelectorAll('input')];
+        if(document.activeElement===inputs.at(-1)){
+          ev.preventDefault();
+          makeRow();
+          setTimeout(()=>tbody.querySelectorAll('tr:last-child input')[0].focus(),0);
+        }
+      }
+    });
+
+    function buildLista(){
+      const lines=[];
+      [...tbody.querySelectorAll('tr')].forEach((r,i)=>{
+        const nome=r.children[0].querySelector('input').value.trim();
+        const val=r.children[1].querySelector('input').value.trim();
+        if(!val) return;
+        lines.push(`${nome||'Item '+(i+1)}; ${val}`);
+      });
+      return lines.join('\n');
+    }
+
+    form.addEventListener('submit',async ev=>{
+      ev.preventDefault();
+      resultadoEl.classList.add('d-none');
+      [...tbody.querySelectorAll('tr')].forEach(tr=>tr.classList.remove('selecionado'));
+      const lista=buildLista();
+      if(!lista.trim()){alert('Adicione pelo menos um item válido.');return;}
+      const data=new FormData();
+      data.append('alvo',alvoInput.value.trim());
+      data.append('tolerancia',tolInput.value.trim());
+      data.append('lista',lista);
+      try{
+        const resp=await fetch('/',{method:'POST',body:data});
+        const ct=resp.headers.get('content-type')||'';
+        if(ct.startsWith('text/plain')){
+          const msg=await resp.text();
+          const modal=new bootstrap.Modal(document.getElementById('noMatchModal'));
+          document.querySelector('#noMatchModal .modal-body').textContent=msg;
+          modal.show();
+          return;
+        }
+        const json=await resp.json();
+        pintarResultado(json);
+      }catch(e){
+        alert('Erro na comunicação.');
+      }
+    });
+
+    function pintarResultado(json){
+      const indices=json.selecionados.map(x=>x.index);
+      const linhas=[...tbody.querySelectorAll('tr')];
+      linhas.forEach((tr,i)=>tr.classList.toggle('selecionado',indices.includes(i)));
+      resultadoEl.innerHTML=`
+        <strong>Total:</strong> ${json.total_txt} | 
+        <strong>Alvo:</strong> ${json.alvo_txt} | 
+        <strong>Diferença:</strong> ${json.diferenca_txt} | 
+        <strong>Tolerância:</strong> ±${json.tolerancia_txt}`;
+      resultadoEl.classList.remove('d-none');
+    }
+
+    makeRow();
+  </script>
+</body>
+</html>
